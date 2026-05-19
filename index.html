@@ -1,0 +1,1289 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lagomorph</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body class="theme-warren">
+    <main class="app">
+      <section class="setup-panel" aria-label="Oyun ayarları">
+        <div>
+          <p class="eyebrow">Lagomorph</p>
+          <h1>Kutu kapmaca, tavşan aklıyla.</h1>
+        </div>
+
+        <div class="control-grid">
+          <label class="field">
+            <span>Mod</span>
+            <select id="modeSelect">
+              <option value="local">2 Oyuncu</option>
+              <option value="bot">Kullanıcı vs Bot</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>Grid</span>
+            <input id="gridSize" type="range" min="3" max="10" value="5" />
+            <strong id="gridValue">5 x 5</strong>
+          </label>
+
+          <label class="field">
+            <span>Tema</span>
+            <select id="themeSelect">
+              <option value="warren">The Warren</option>
+              <option value="harvest">The Harvest</option>
+            </select>
+          </label>
+
+          <div class="player-editor" aria-label="Oyuncu ayarları">
+            <label class="field">
+              <span>Oyuncu 1 nickname</span>
+              <input
+                id="playerOneName"
+                type="text"
+                value="Oyuncu 1"
+                maxlength="18"
+              />
+            </label>
+            <label class="field color-field">
+              <span>Tavşan rengi</span>
+              <input id="playerOneColor" type="color" value="#e85d3f" />
+            </label>
+            <label class="field">
+              <span>Oyuncu 2 nickname</span>
+              <input
+                id="playerTwoName"
+                type="text"
+                value="Oyuncu 2"
+                maxlength="18"
+              />
+            </label>
+            <label class="field color-field">
+              <span>Tavşan rengi</span>
+              <input id="playerTwoColor" type="color" value="#3772ff" />
+            </label>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="startButton" type="button">Oyunu Başlat</button>
+          <button id="restartButton" type="button" class="ghost">
+            Yeniden Başlat
+          </button>
+        </div>
+      </section>
+
+      <section class="game-shell" aria-label="Lagomorph oyun alanı">
+        <div class="hud">
+          <div id="scoreboard" class="scoreboard"></div>
+          <div class="status">
+            <span id="statusText">Ayarları seçip oyunu başlat.</span>
+            <button
+              id="themeToggle"
+              type="button"
+              class="icon-button"
+              title="Temayı değiştir"
+            >
+              ↺
+            </button>
+          </div>
+        </div>
+
+        <div class="board-frame">
+          <canvas
+            id="gameCanvas"
+            width="920"
+            height="720"
+            aria-label="Dots and Boxes oyun tahtası"
+          ></canvas>
+          <div
+            id="captureBanner"
+            class="capture-banner"
+            aria-live="polite"
+          ></div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      (() => {
+        const MIN_SIZE = 3;
+        const MAX_SIZE = 10;
+
+        function clampSize(value) {
+          const numeric = Number.parseInt(value, 10);
+          if (Number.isNaN(numeric)) return MIN_SIZE;
+          return Math.min(MAX_SIZE, Math.max(MIN_SIZE, numeric));
+        }
+
+        function edgeKey(move) {
+          return `${move.row},${move.col}`;
+        }
+
+        function cloneEdgeMap(map) {
+          return {
+            h: { ...map.h },
+            v: { ...map.v },
+          };
+        }
+
+        class Game {
+          constructor({ rows = 5, cols = 5, players }) {
+            if (!Array.isArray(players) || players.length < 2) {
+              throw new Error("Game requires at least two players.");
+            }
+
+            this.rows = clampSize(rows);
+            this.cols = clampSize(cols);
+            this.players = players.map((player) => ({ ...player, score: 0 }));
+            this.activePlayerIndex = 0;
+            this.edges = { h: {}, v: {} };
+            this.boxes = Array.from(
+              { length: this.rows * this.cols },
+              () => null,
+            );
+            this.isGameOver = false;
+            this.lastMove = null;
+          }
+
+          getState() {
+            return {
+              rows: this.rows,
+              cols: this.cols,
+              players: this.players.map((player) => ({ ...player })),
+              activePlayerIndex: this.activePlayerIndex,
+              currentPlayer: { ...this.players[this.activePlayerIndex] },
+              edges: cloneEdgeMap(this.edges),
+              boxes: [...this.boxes],
+              isGameOver: this.isGameOver,
+              lastMove: this.lastMove ? { ...this.lastMove } : null,
+            };
+          }
+
+          getLegalMoves() {
+            const moves = [];
+
+            for (let row = 0; row <= this.rows; row += 1) {
+              for (let col = 0; col < this.cols; col += 1) {
+                const move = { orientation: "h", row, col };
+                if (this.isLegalMove(move)) moves.push(move);
+              }
+            }
+
+            for (let row = 0; row < this.rows; row += 1) {
+              for (let col = 0; col <= this.cols; col += 1) {
+                const move = { orientation: "v", row, col };
+                if (this.isLegalMove(move)) moves.push(move);
+              }
+            }
+
+            return moves;
+          }
+
+          isLegalMove(move) {
+            if (!move || this.isGameOver) return false;
+            if (move.orientation === "h") {
+              return (
+                move.row >= 0 &&
+                move.row <= this.rows &&
+                move.col >= 0 &&
+                move.col < this.cols &&
+                !this.edges.h[edgeKey(move)]
+              );
+            }
+
+            if (move.orientation === "v") {
+              return (
+                move.row >= 0 &&
+                move.row < this.rows &&
+                move.col >= 0 &&
+                move.col <= this.cols &&
+                !this.edges.v[edgeKey(move)]
+              );
+            }
+
+            return false;
+          }
+
+          applyMove(move) {
+            if (!this.isLegalMove(move)) {
+              return { ok: false, reason: "illegal-move", completedBoxes: [] };
+            }
+
+            const player = this.players[this.activePlayerIndex];
+            const normalizedMove = {
+              orientation: move.orientation,
+              row: move.row,
+              col: move.col,
+            };
+
+            this.edges[normalizedMove.orientation][edgeKey(normalizedMove)] =
+              player.id;
+            this.lastMove = normalizedMove;
+
+            const completedBoxes = this.getAdjacentBoxes(normalizedMove).filter(
+              (box) =>
+                !this.getBoxOwner(box.row, box.col) &&
+                this.countBoxSides(box.row, box.col) === 4,
+            );
+
+            for (const box of completedBoxes) {
+              this.boxes[this.boxIndex(box.row, box.col)] = player.id;
+              player.score += 1;
+            }
+
+            this.isGameOver = this.boxes.every(Boolean);
+
+            if (completedBoxes.length === 0 && !this.isGameOver) {
+              this.activePlayerIndex =
+                (this.activePlayerIndex + 1) % this.players.length;
+            }
+
+            return {
+              ok: true,
+              move: normalizedMove,
+              playerId: player.id,
+              completedBoxes,
+              bonusTurn: completedBoxes.length > 0,
+              isGameOver: this.isGameOver,
+            };
+          }
+
+          getBoxEdges(row, col) {
+            return [
+              { orientation: "h", row, col },
+              { orientation: "h", row: row + 1, col },
+              { orientation: "v", row, col },
+              { orientation: "v", row, col: col + 1 },
+            ];
+          }
+
+          countBoxSides(row, col) {
+            return this.getBoxEdges(row, col).filter(
+              (move) => this.edges[move.orientation][edgeKey(move)],
+            ).length;
+          }
+
+          wouldCompleteBox(move) {
+            if (!this.isLegalMove(move)) return false;
+            return this.getAdjacentBoxes(move).some(
+              (box) => this.countBoxSides(box.row, box.col) === 3,
+            );
+          }
+
+          wouldCreateThirdSide(move) {
+            if (!this.isLegalMove(move)) return true;
+            return this.getAdjacentBoxes(move).some(
+              (box) => this.countBoxSides(box.row, box.col) === 2,
+            );
+          }
+
+          getAdjacentBoxes(move) {
+            if (move.orientation === "h") {
+              return [
+                { row: move.row - 1, col: move.col },
+                { row: move.row, col: move.col },
+              ].filter((box) => this.isBoxCoordinate(box.row, box.col));
+            }
+
+            return [
+              { row: move.row, col: move.col - 1 },
+              { row: move.row, col: move.col },
+            ].filter((box) => this.isBoxCoordinate(box.row, box.col));
+          }
+
+          getBoxOwner(row, col) {
+            return this.boxes[this.boxIndex(row, col)];
+          }
+
+          boxIndex(row, col) {
+            return row * this.cols + col;
+          }
+
+          isBoxCoordinate(row, col) {
+            return row >= 0 && row < this.rows && col >= 0 && col < this.cols;
+          }
+        }
+
+        function chooseBotMove(game) {
+          const legalMoves = game.getLegalMoves();
+          if (legalMoves.length === 0) return null;
+
+          const attackMove = legalMoves.find((move) =>
+            game.wouldCompleteBox(move),
+          );
+          if (attackMove) return attackMove;
+
+          const safeMove = legalMoves.find(
+            (move) => !game.wouldCreateThirdSide(move),
+          );
+          if (safeMove) return safeMove;
+
+          return legalMoves[0];
+        }
+
+        const THEMES = {
+          warren: {
+            board: "#7caf61",
+            boardAlt: "#6da756",
+            dot: "#fff7dc",
+            edge: "#7a4a27",
+            hover: "rgba(255, 230, 128, 0.72)",
+            box: "rgba(255, 246, 196, 0.44)",
+            mark: "🐰",
+          },
+          harvest: {
+            board: "#9a6a3a",
+            boardAlt: "#80542f",
+            dot: "#ffe2a8",
+            edge: "#f08c2e",
+            hover: "rgba(255, 190, 84, 0.76)",
+            box: "rgba(255, 158, 67, 0.36)",
+            mark: "🥕",
+          },
+        };
+
+        const canvas = document.querySelector("#gameCanvas");
+        const ctx = canvas.getContext("2d");
+        const modeSelect = document.querySelector("#modeSelect");
+        const gridSize = document.querySelector("#gridSize");
+        const gridValue = document.querySelector("#gridValue");
+        const themeSelect = document.querySelector("#themeSelect");
+        const playerOneName = document.querySelector("#playerOneName");
+        const playerTwoName = document.querySelector("#playerTwoName");
+        const playerOneColor = document.querySelector("#playerOneColor");
+        const playerTwoColor = document.querySelector("#playerTwoColor");
+        const startButton = document.querySelector("#startButton");
+        const restartButton = document.querySelector("#restartButton");
+        const themeToggle = document.querySelector("#themeToggle");
+        const scoreboard = document.querySelector("#scoreboard");
+        const statusText = document.querySelector("#statusText");
+        const captureBanner = document.querySelector("#captureBanner");
+
+        let game = null;
+        let hoverMove = null;
+        let botThinking = false;
+        let edgeEffects = [];
+        let captureEffects = [];
+        let particles = [];
+        let victoryEffect = null;
+        let animationLoopStarted = false;
+
+        function cleanName(value, fallback) {
+          const trimmed = value.trim();
+          return trimmed || fallback;
+        }
+
+        function createPlayers(mode) {
+          return [
+            {
+              id: "p1",
+              name: cleanName(playerOneName.value, "Oyuncu 1"),
+              color: playerOneColor.value,
+              isBot: false,
+            },
+            {
+              id: "p2",
+              name: cleanName(
+                playerTwoName.value,
+                mode === "bot" ? "Lagomorph Bot" : "Oyuncu 2",
+              ),
+              color: playerTwoColor.value,
+              isBot: mode === "bot",
+            },
+          ];
+        }
+
+        function startGame() {
+          const size = Number.parseInt(gridSize.value, 10);
+          game = new Game({
+            rows: size,
+            cols: size,
+            players: createPlayers(modeSelect.value),
+          });
+          hoverMove = null;
+          botThinking = false;
+          edgeEffects = [];
+          captureEffects = [];
+          particles = [];
+          victoryEffect = null;
+          setTheme(themeSelect.value);
+          updateUI();
+          draw();
+          startAnimationLoop();
+          maybeRunBot();
+        }
+
+        function setTheme(theme) {
+          document.body.classList.toggle("theme-warren", theme === "warren");
+          document.body.classList.toggle("theme-harvest", theme === "harvest");
+          themeSelect.value = theme;
+          draw();
+        }
+
+        function toggleTheme() {
+          setTheme(themeSelect.value === "warren" ? "harvest" : "warren");
+        }
+
+        function syncSecondPlayerDefaults() {
+          if (
+            modeSelect.value === "bot" &&
+            playerTwoName.value === "Oyuncu 2"
+          ) {
+            playerTwoName.value = "Lagomorph Bot";
+          }
+          if (
+            modeSelect.value === "local" &&
+            playerTwoName.value === "Lagomorph Bot"
+          ) {
+            playerTwoName.value = "Oyuncu 2";
+          }
+        }
+
+        function refreshPlayerSettings() {
+          if (!game) return;
+          game.players[0].name = cleanName(
+            playerOneName.value,
+            "Oyuncu 1",
+          );
+          game.players[0].color = playerOneColor.value;
+          game.players[1].name = cleanName(
+            playerTwoName.value,
+            modeSelect.value === "bot" ? "Lagomorph Bot" : "Oyuncu 2",
+          );
+          game.players[1].color = playerTwoColor.value;
+          updateUI();
+          draw();
+        }
+
+        function updateUI(lastResult = null) {
+          if (!game) return;
+          const state = game.getState();
+          scoreboard.innerHTML = state.players
+            .map(
+              (player) => `
+                <article class="score ${player.id === state.currentPlayer.id ? "active" : ""}" style="--player:${player.color}">
+                  <span>${player.name}</span>
+                  <strong>${player.score}</strong>
+                </article>
+              `,
+            )
+            .join("");
+
+          if (state.isGameOver) {
+            const topScore = Math.max(
+              ...state.players.map((player) => player.score),
+            );
+            const winners = state.players.filter(
+              (player) => player.score === topScore,
+            );
+            statusText.textContent =
+              winners.length > 1 ? "Berabere." : `${winners[0].name} kazandı.`;
+            createVictoryEffects(state);
+          } else {
+            statusText.textContent = `${state.currentPlayer.name} sırası`;
+          }
+
+          if (lastResult?.completedBoxes.length) {
+            showCapture(
+              lastResult.completedBoxes.length > 1
+                ? "COMBO!"
+                : `${state.currentPlayer.name} alan kaptı`,
+            );
+            const activeCard = scoreboard.querySelector(".score.active");
+            activeCard?.classList.remove("burst");
+            requestAnimationFrame(() => activeCard?.classList.add("burst"));
+            const activeScore = activeCard?.querySelector("strong");
+            activeScore?.animate(
+              [
+                { transform: "translateY(0) scale(1)" },
+                { transform: "translateY(-8px) scale(1.18)" },
+                { transform: "translateY(0) scale(1)" },
+              ],
+              { duration: 360, easing: "cubic-bezier(.2,.8,.2,1)" },
+            );
+          }
+        }
+
+        function showCapture(text) {
+          captureBanner.textContent = text;
+          captureBanner.classList.remove("show");
+          requestAnimationFrame(() => captureBanner.classList.add("show"));
+        }
+
+        function startAnimationLoop() {
+          if (animationLoopStarted) return;
+          animationLoopStarted = true;
+          requestAnimationFrame(animationLoop);
+        }
+
+        function animationLoop() {
+          const now = performance.now();
+          edgeEffects = edgeEffects.filter(
+            (effect) => now - effect.startedAt < 520,
+          );
+          captureEffects = captureEffects.filter(
+            (effect) => now - effect.startedAt < 980,
+          );
+          particles = particles.filter(
+            (particle) => now - particle.startedAt < particle.duration,
+          );
+          if (
+            victoryEffect &&
+            now - victoryEffect.startedAt >= victoryEffect.duration
+          )
+            victoryEffect = null;
+          if (game) draw();
+          requestAnimationFrame(animationLoop);
+        }
+
+        function createEdgeEffect(move, playerId) {
+          if (!game || !move) return;
+          const state = game.getState();
+          const player = state.players.find((item) => item.id === playerId);
+          edgeEffects.push({
+            ...move,
+            color: player?.color ?? "#ffffff",
+            startedAt: performance.now(),
+          });
+        }
+
+        function createCaptureEffects(result) {
+          if (!game || !result.completedBoxes.length) return;
+          const state = game.getState();
+          const metrics = boardMetrics(state);
+          const player = state.players.find(
+            (item) => item.id === result.playerId,
+          );
+          const color = player?.color ?? "#ffffff";
+          const startedAt = performance.now();
+
+          for (const box of result.completedBoxes) {
+            const centerX = metrics.left + (box.col + 0.5) * metrics.cell;
+            const centerY = metrics.top + (box.row + 0.5) * metrics.cell;
+            captureEffects.push({ ...box, color, startedAt });
+            createParticles(
+              centerX,
+              centerY,
+              color,
+              result.completedBoxes.length > 1 ? 24 : 16,
+            );
+          }
+        }
+
+        function createParticles(x, y, color, count) {
+          const startedAt = performance.now();
+          for (let index = 0; index < count; index += 1) {
+            const angle = (Math.PI * 2 * index) / count;
+            const speed = 34 + Math.random() * 68;
+            particles.push({
+              x,
+              y,
+              color,
+              vx: Math.cos(angle) * speed,
+              vy: Math.sin(angle) * speed - 32,
+              size: 2.5 + Math.random() * 4,
+              startedAt,
+              duration: 720 + Math.random() * 280,
+            });
+          }
+        }
+
+        function createVictoryEffects(state) {
+          if (victoryEffect) return;
+          const topScore = Math.max(
+            ...state.players.map((player) => player.score),
+          );
+          const winners = state.players.filter(
+            (player) => player.score === topScore,
+          );
+          const isDraw = winners.length > 1;
+          const winner = winners[0];
+          const color = isDraw ? "#fff7dc" : winner.color;
+          const label = isDraw ? "Berabere!" : `${winner.name} kazandı!`;
+
+          victoryEffect = {
+            color,
+            label,
+            isDraw,
+            startedAt: performance.now(),
+            duration: 4300,
+          };
+
+          showCapture(isDraw ? "BERABERE!" : `${winner.name} KAZANDI!`);
+          for (let index = 0; index < 96; index += 1) {
+            particles.push({
+              x: Math.random() * canvas.width,
+              y: -30 - Math.random() * 240,
+              color:
+                index % 3 === 0
+                  ? color
+                  : ["#fff7dc", "#ffb703", "#8ecae6", "#fb7185"][index % 4],
+              vx: -70 + Math.random() * 140,
+              vy: 120 + Math.random() * 180,
+              size: 3 + Math.random() * 6,
+              startedAt: victoryEffect.startedAt + Math.random() * 260,
+              duration: 3000 + Math.random() * 900,
+            });
+          }
+        }
+
+        function boardMetrics(state) {
+          const padding = 58;
+          const width = canvas.width - padding * 2;
+          const height = canvas.height - padding * 2;
+          const cell = Math.min(width / state.cols, height / state.rows);
+          const boardWidth = cell * state.cols;
+          const boardHeight = cell * state.rows;
+          return {
+            cell,
+            left: (canvas.width - boardWidth) / 2,
+            top: (canvas.height - boardHeight) / 2,
+          };
+        }
+
+        function draw() {
+          if (!game) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            return;
+          }
+
+          const state = game.getState();
+          const theme = THEMES[themeSelect.value];
+          const metrics = boardMetrics(state);
+
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = theme.board;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = theme.boardAlt;
+          for (let i = -canvas.height; i < canvas.width; i += 42) {
+            ctx.fillRect(i, 0, 18, canvas.height);
+          }
+          drawCuteBoardDecor(theme);
+
+          drawBoxes(state, metrics, theme);
+          drawEdges(state, metrics, theme);
+          drawEdgeEffects(metrics);
+          if (hoverMove && game.isLegalMove(hoverMove))
+            drawEdge(hoverMove, metrics, theme.hover, 10);
+          drawDots(state, metrics, theme);
+          drawVictoryOverlay();
+          drawParticles();
+        }
+
+        function drawBoxes(state, metrics, theme) {
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.font = `${Math.max(22, metrics.cell * 0.34)}px "Segoe UI Emoji", sans-serif`;
+
+          state.boxes.forEach((ownerId, index) => {
+            if (!ownerId) return;
+            const row = Math.floor(index / state.cols);
+            const col = index % state.cols;
+            const player = state.players.find((item) => item.id === ownerId);
+            const x = metrics.left + col * metrics.cell;
+            const y = metrics.top + row * metrics.cell;
+            const effect = captureEffects.find(
+              (item) => item.row === row && item.col === col,
+            );
+            const elapsed = effect ? performance.now() - effect.startedAt : 980;
+            const progress = Math.min(1, elapsed / 720);
+            const scale = effect
+              ? Math.min(1.18, 0.18 + easeOutBack(progress))
+              : 1;
+            const lift = effect ? (1 - progress) * 18 : 0;
+            ctx.fillStyle = theme.box;
+            ctx.fillRect(x + 8, y + 8, metrics.cell - 16, metrics.cell - 16);
+            if (effect)
+              drawCaptureRing(
+                x + metrics.cell / 2,
+                y + metrics.cell / 2,
+                metrics.cell,
+                player?.color ?? effect.color,
+                progress,
+              );
+            drawClaimMark(
+              theme,
+              x + metrics.cell / 2,
+              y + metrics.cell / 2 - lift,
+              metrics.cell,
+              player?.color ?? "#fff",
+              scale,
+            );
+          });
+        }
+
+        function drawCuteBoardDecor(theme) {
+          const time = performance.now() / 1000;
+          ctx.save();
+          ctx.globalAlpha = 0.58;
+          for (let index = 0; index < 16; index += 1) {
+            const x =
+              ((index * 173 + Math.sin(time * 0.6 + index) * 18) %
+                canvas.width) +
+              12;
+            const y =
+              36 +
+              ((index * 97 + Math.cos(time * 0.5 + index) * 14) %
+                (canvas.height - 72));
+            const size = 7 + (index % 4) * 2;
+            ctx.save();
+            ctx.translate(x, y);
+            ctx.rotate(Math.sin(time + index) * 0.18);
+            if (index % 3 === 0) {
+              drawTinyFlower(size, theme.hover);
+            } else if (index % 3 === 1) {
+              drawTinyCarrot(size);
+            } else {
+              drawTinyHeart(size, theme.dot);
+            }
+            ctx.restore();
+          }
+          ctx.restore();
+        }
+
+        function drawTinyFlower(size, color) {
+          ctx.fillStyle = color;
+          for (let petal = 0; petal < 5; petal += 1) {
+            ctx.save();
+            ctx.rotate((Math.PI * 2 * petal) / 5);
+            ctx.beginPath();
+            ctx.ellipse(
+              0,
+              -size * 0.6,
+              size * 0.22,
+              size * 0.48,
+              0,
+              0,
+              Math.PI * 2,
+            );
+            ctx.fill();
+            ctx.restore();
+          }
+          ctx.fillStyle = "#ffe08a";
+          ctx.beginPath();
+          ctx.arc(0, 0, size * 0.24, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        function drawTinyCarrot(size) {
+          ctx.fillStyle = "#f08c2e";
+          ctx.beginPath();
+          ctx.moveTo(-size * 0.34, -size * 0.2);
+          ctx.lineTo(size * 0.34, -size * 0.2);
+          ctx.lineTo(0, size * 0.72);
+          ctx.closePath();
+          ctx.fill();
+          ctx.strokeStyle = "rgba(72, 54, 26, 0.18)";
+          ctx.stroke();
+          ctx.fillStyle = "#4c8b3b";
+          ctx.fillRect(-size * 0.08, -size * 0.78, size * 0.16, size * 0.56);
+        }
+
+        function drawTinyHeart(size, color) {
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.moveTo(0, size * 0.5);
+          ctx.bezierCurveTo(
+            -size,
+            -size * 0.08,
+            -size * 0.68,
+            -size * 0.82,
+            0,
+            -size * 0.34,
+          );
+          ctx.bezierCurveTo(
+            size * 0.68,
+            -size * 0.82,
+            size,
+            -size * 0.08,
+            0,
+            size * 0.5,
+          );
+          ctx.fill();
+        }
+
+        function easeOutBack(value) {
+          const c1 = 1.70158;
+          const c3 = c1 + 1;
+          return 1 + c3 * Math.pow(value - 1, 3) + c1 * Math.pow(value - 1, 2);
+        }
+
+        function drawCaptureRing(x, y, cell, color, progress) {
+          ctx.save();
+          ctx.globalAlpha = Math.max(0, 1 - progress);
+          ctx.strokeStyle = color;
+          ctx.lineWidth = Math.max(2, cell * 0.035);
+          ctx.beginPath();
+          ctx.arc(x, y, cell * (0.18 + progress * 0.42), 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        function drawClaimMark(theme, x, y, cell, color, scale) {
+          if (theme.mark === "🐰") {
+            drawRabbitMark(x, y, cell, color, scale);
+            return;
+          }
+          drawCarrotMark(x, y, cell, color, scale);
+        }
+
+        function drawRabbitMark(x, y, cell, color, scale) {
+          const size = Math.max(18, cell * 0.26) * scale;
+          ctx.save();
+          ctx.translate(x, y);
+          ctx.shadowColor = color;
+          ctx.shadowBlur = size * 0.35;
+          ctx.fillStyle = color;
+          ctx.strokeStyle = "rgba(45, 36, 25, 0.28)";
+          ctx.lineWidth = Math.max(1.5, size * 0.06);
+
+          ctx.beginPath();
+          ctx.ellipse(
+            -size * 0.28,
+            -size * 0.78,
+            size * 0.18,
+            size * 0.48,
+            -0.22,
+            0,
+            Math.PI * 2,
+          );
+          ctx.ellipse(
+            size * 0.28,
+            -size * 0.78,
+            size * 0.18,
+            size * 0.48,
+            0.22,
+            0,
+            Math.PI * 2,
+          );
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.arc(0, 0, size * 0.58, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.fillStyle = "rgba(255, 255, 255, 0.74)";
+          ctx.beginPath();
+          ctx.arc(-size * 0.18, -size * 0.08, size * 0.08, 0, Math.PI * 2);
+          ctx.arc(size * 0.18, -size * 0.08, size * 0.08, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = "#2d2419";
+          ctx.beginPath();
+          ctx.arc(-size * 0.18, -size * 0.08, size * 0.035, 0, Math.PI * 2);
+          ctx.arc(size * 0.18, -size * 0.08, size * 0.035, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = "#fff4f0";
+          ctx.beginPath();
+          ctx.arc(0, size * 0.12, size * 0.19, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "#2d2419";
+          ctx.beginPath();
+          ctx.arc(0, size * 0.04, size * 0.035, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+
+        function drawCarrotMark(x, y, cell, color, scale) {
+          const size = Math.max(18, cell * 0.28) * scale;
+          ctx.save();
+          ctx.translate(x, y);
+          ctx.shadowColor = color;
+          ctx.shadowBlur = size * 0.32;
+
+          ctx.fillStyle = "#4c8b3b";
+          for (let index = -1; index <= 1; index += 1) {
+            ctx.save();
+            ctx.rotate(index * 0.34);
+            ctx.beginPath();
+            ctx.ellipse(
+              0,
+              -size * 0.62,
+              size * 0.11,
+              size * 0.36,
+              0,
+              0,
+              Math.PI * 2,
+            );
+            ctx.fill();
+            ctx.restore();
+          }
+
+          ctx.fillStyle = color;
+          ctx.strokeStyle = "rgba(45, 36, 25, 0.24)";
+          ctx.lineWidth = Math.max(1.5, size * 0.06);
+          ctx.beginPath();
+          ctx.moveTo(-size * 0.36, -size * 0.18);
+          ctx.quadraticCurveTo(0, -size * 0.46, size * 0.36, -size * 0.18);
+          ctx.lineTo(0, size * 0.62);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        function drawEdges(state, metrics, theme) {
+          for (const [key, playerId] of Object.entries(state.edges.h)) {
+            const [row, col] = key.split(",").map(Number);
+            const player = state.players.find((item) => item.id === playerId);
+            drawEdge(
+              { orientation: "h", row, col },
+              metrics,
+              player?.color ?? theme.edge,
+              8,
+            );
+          }
+
+          for (const [key, playerId] of Object.entries(state.edges.v)) {
+            const [row, col] = key.split(",").map(Number);
+            const player = state.players.find((item) => item.id === playerId);
+            drawEdge(
+              { orientation: "v", row, col },
+              metrics,
+              player?.color ?? theme.edge,
+              8,
+            );
+          }
+        }
+
+        function drawEdge(move, metrics, color, width) {
+          const x = metrics.left + move.col * metrics.cell;
+          const y = metrics.top + move.row * metrics.cell;
+          ctx.strokeStyle = color;
+          ctx.lineWidth = width;
+          ctx.lineCap = "round";
+          ctx.beginPath();
+          if (move.orientation === "h") {
+            ctx.moveTo(x, y);
+            ctx.lineTo(x + metrics.cell, y);
+          } else {
+            ctx.moveTo(x, y);
+            ctx.lineTo(x, y + metrics.cell);
+          }
+          ctx.stroke();
+        }
+
+        function drawEdgeEffects(metrics) {
+          const now = performance.now();
+          for (const effect of edgeEffects) {
+            const progress = Math.min(1, (now - effect.startedAt) / 520);
+            ctx.save();
+            ctx.globalAlpha = Math.max(0, 1 - progress);
+            drawEdge(effect, metrics, effect.color, 18 - progress * 10);
+            ctx.restore();
+          }
+        }
+
+        function drawDots(state, metrics, theme) {
+          ctx.fillStyle = theme.dot;
+          ctx.strokeStyle = "rgba(55, 35, 20, .18)";
+          ctx.lineWidth = 2;
+          for (let row = 0; row <= state.rows; row += 1) {
+            for (let col = 0; col <= state.cols; col += 1) {
+              ctx.beginPath();
+              ctx.arc(
+                metrics.left + col * metrics.cell,
+                metrics.top + row * metrics.cell,
+                7,
+                0,
+                Math.PI * 2,
+              );
+              ctx.fill();
+              ctx.stroke();
+            }
+          }
+        }
+
+        function drawParticles() {
+          const now = performance.now();
+          for (const particle of particles) {
+            const progress = Math.min(
+              1,
+              (now - particle.startedAt) / particle.duration,
+            );
+            if (progress < 0) continue;
+            const seconds = (now - particle.startedAt) / 1000;
+            const x = particle.x + particle.vx * seconds;
+            const y =
+              particle.y + particle.vy * seconds + 94 * seconds * seconds;
+            ctx.save();
+            ctx.globalAlpha = Math.max(0, 1 - progress);
+            ctx.fillStyle = particle.color;
+            ctx.beginPath();
+            ctx.arc(
+              x,
+              y,
+              particle.size * (1 - progress * 0.45),
+              0,
+              Math.PI * 2,
+            );
+            ctx.fill();
+            ctx.restore();
+          }
+        }
+
+        function drawVictoryOverlay() {
+          if (!victoryEffect) return;
+          const elapsed = performance.now() - victoryEffect.startedAt;
+          const progress = Math.min(1, elapsed / victoryEffect.duration);
+          const fadeIn = Math.min(1, progress / 0.18);
+          const fadeOut =
+            progress > 0.78 ? Math.max(0, 1 - (progress - 0.78) / 0.22) : 1;
+          const alpha = fadeIn * fadeOut;
+          const pulse = 1 + Math.sin(elapsed / 130) * 0.035;
+
+          ctx.save();
+          ctx.globalAlpha = alpha;
+          ctx.fillStyle = "rgba(31, 24, 18, 0.56)";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+          ctx.translate(canvas.width / 2, canvas.height / 2);
+          ctx.scale(pulse, pulse);
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          drawHappyVictoryRabbit(
+            0,
+            -118,
+            victoryEffect.color,
+            elapsed,
+            victoryEffect.isDraw,
+          );
+          ctx.shadowColor = victoryEffect.color;
+          ctx.shadowBlur = 28;
+          ctx.fillStyle = victoryEffect.color;
+          setFittingCanvasFont(
+            victoryEffect.label,
+            canvas.width * 0.84,
+            64,
+            34,
+            900,
+          );
+          ctx.fillText(victoryEffect.label, 0, 42);
+
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = "rgba(255, 255, 255, 0.86)";
+          ctx.font = '800 24px "Segoe UI", sans-serif';
+          ctx.fillText(
+            victoryEffect.isDraw
+              ? "Son kutu kapandı"
+              : "Kazanan kutuları topladı",
+            0,
+            98,
+          );
+          ctx.restore();
+        }
+
+        function drawHappyVictoryRabbit(x, y, color, elapsed, isDraw) {
+          const hop = Math.sin(elapsed / 150) * 12;
+          const wave = Math.sin(elapsed / 95) * 0.55;
+          const size = isDraw ? 58 : 70;
+          ctx.save();
+          ctx.translate(x, y + hop);
+          ctx.shadowColor = color;
+          ctx.shadowBlur = 32;
+          ctx.fillStyle = isDraw ? "#fff7dc" : color;
+          ctx.strokeStyle = "rgba(45, 36, 25, 0.26)";
+          ctx.lineWidth = 5;
+
+          ctx.beginPath();
+          ctx.ellipse(
+            -size * 0.26,
+            -size * 0.9,
+            size * 0.18,
+            size * 0.54,
+            -0.32,
+            0,
+            Math.PI * 2,
+          );
+          ctx.ellipse(
+            size * 0.26,
+            -size * 0.9,
+            size * 0.18,
+            size * 0.54,
+            0.32,
+            0,
+            Math.PI * 2,
+          );
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.ellipse(
+            0,
+            size * 0.18,
+            size * 0.72,
+            size * 0.62,
+            0,
+            0,
+            Math.PI * 2,
+          );
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.arc(0, -size * 0.26, size * 0.58, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+
+          drawRabbitPaws(size, wave);
+
+          ctx.fillStyle = "rgba(255, 255, 255, 0.78)";
+          ctx.beginPath();
+          ctx.arc(-size * 0.2, -size * 0.34, size * 0.085, 0, Math.PI * 2);
+          ctx.arc(size * 0.2, -size * 0.34, size * 0.085, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "#2d2419";
+          ctx.beginPath();
+          ctx.arc(-size * 0.2, -size * 0.34, size * 0.038, 0, Math.PI * 2);
+          ctx.arc(size * 0.2, -size * 0.34, size * 0.038, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.strokeStyle = "#2d2419";
+          ctx.lineWidth = 4;
+          ctx.beginPath();
+          ctx.arc(0, -size * 0.16, size * 0.19, 0.12 * Math.PI, 0.88 * Math.PI);
+          ctx.stroke();
+
+          ctx.fillStyle = "#fff4f0";
+          ctx.beginPath();
+          ctx.arc(0, -size * 0.18, size * 0.045, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+
+        function drawRabbitPaws(size, wave) {
+          ctx.save();
+          ctx.fillStyle = "rgba(255, 255, 255, 0.72)";
+          ctx.strokeStyle = "rgba(45, 36, 25, 0.22)";
+          ctx.lineWidth = 4;
+          ctx.translate(-size * 0.64, size * 0.02);
+          ctx.rotate(-0.72 - wave * 0.28);
+          ctx.beginPath();
+          ctx.ellipse(0, 0, size * 0.16, size * 0.36, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+
+          ctx.save();
+          ctx.fillStyle = "rgba(255, 255, 255, 0.72)";
+          ctx.strokeStyle = "rgba(45, 36, 25, 0.22)";
+          ctx.lineWidth = 4;
+          ctx.translate(size * 0.64, size * 0.02);
+          ctx.rotate(0.72 + wave * 0.28);
+          ctx.beginPath();
+          ctx.ellipse(0, 0, size * 0.16, size * 0.36, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        function setFittingCanvasFont(
+          text,
+          maxWidth,
+          maxSize,
+          minSize,
+          weight,
+        ) {
+          for (let size = maxSize; size >= minSize; size -= 2) {
+            ctx.font = `${weight} ${size}px "Segoe UI", sans-serif`;
+            if (ctx.measureText(text).width <= maxWidth || size === minSize)
+              return;
+          }
+        }
+
+        function getPointerMove(event) {
+          if (!game) return null;
+          const rect = canvas.getBoundingClientRect();
+          const state = game.getState();
+          const metrics = boardMetrics(state);
+          const scaleX = canvas.width / rect.width;
+          const scaleY = canvas.height / rect.height;
+          const x = (event.clientX - rect.left) * scaleX;
+          const y = (event.clientY - rect.top) * scaleY;
+          const candidates = [];
+
+          for (const move of game.getLegalMoves()) {
+            const startX = metrics.left + move.col * metrics.cell;
+            const startY = metrics.top + move.row * metrics.cell;
+            const center =
+              move.orientation === "h"
+                ? { x: startX + metrics.cell / 2, y: startY }
+                : { x: startX, y: startY + metrics.cell / 2 };
+            candidates.push({
+              move,
+              distance: Math.hypot(center.x - x, center.y - y),
+            });
+          }
+
+          candidates.sort((a, b) => a.distance - b.distance);
+          return candidates[0]?.distance < metrics.cell * 0.42
+            ? candidates[0].move
+            : null;
+        }
+
+        function applyMove(move) {
+          if (!game || !move) return;
+          const result = game.applyMove(move);
+          if (!result.ok) return;
+          hoverMove = null;
+          createEdgeEffect(result.move, result.playerId);
+          createCaptureEffects(result);
+          updateUI(result);
+          draw();
+          maybeRunBot();
+        }
+
+        function maybeRunBot() {
+          if (!game || botThinking) return;
+          const state = game.getState();
+          if (state.isGameOver || !state.currentPlayer.isBot) return;
+          botThinking = true;
+          window.setTimeout(() => {
+            const move = chooseBotMove(game);
+            botThinking = false;
+            if (move) applyMove(move);
+          }, 420);
+        }
+
+        gridSize.addEventListener("input", () => {
+          gridValue.textContent = `${gridSize.value} x ${gridSize.value}`;
+        });
+        modeSelect.addEventListener("change", () => {
+          syncSecondPlayerDefaults();
+          refreshPlayerSettings();
+        });
+        playerOneName.addEventListener("input", refreshPlayerSettings);
+        playerTwoName.addEventListener("input", refreshPlayerSettings);
+        playerOneColor.addEventListener("input", refreshPlayerSettings);
+        playerTwoColor.addEventListener("input", refreshPlayerSettings);
+        themeSelect.addEventListener("change", () =>
+          setTheme(themeSelect.value),
+        );
+        themeToggle.addEventListener("click", toggleTheme);
+        startButton.addEventListener("click", startGame);
+        restartButton.addEventListener("click", startGame);
+        canvas.addEventListener("pointermove", (event) => {
+          if (botThinking || game?.getState().currentPlayer.isBot) return;
+          hoverMove = getPointerMove(event);
+          draw();
+        });
+        canvas.addEventListener("pointerleave", () => {
+          hoverMove = null;
+          draw();
+        });
+        canvas.addEventListener("click", () => {
+          if (botThinking || game?.getState().currentPlayer.isBot) return;
+          applyMove(hoverMove);
+        });
+
+        startGame();
+      })();
+    </script>
+  </body>
+</html>
